@@ -1,0 +1,147 @@
+image: docker:latest
+services:
+  - name: docker:dind
+    alias: docker
+
+
+stages:
+  - Build image
+  - Test acceptation
+  - Release image
+  - Deploy prod
+  - Test prod
+
+.test_template: &test
+  image: alpine
+  only:
+    - master
+  script:
+    - apk --no-cache add curl
+    - curl "http://$DOMAIN:32000" | grep -q "Hello world!"
+
+
+build:
+  # Official docker image.
+  stage: Build image
+  script:
+    - docker build -t alpinehelloworld .
+    - docker save alpinehelloworld > alpinehelloworld.tar
+  artifacts:
+    paths:
+      - alpinehelloworld.tar
+
+
+test acceptation:
+  # Official docker image.
+  stage: Test acceptation
+  script:
+    - docker load < alpinehelloworld.tar
+    - docker run -d -p 80:5000 -e PORT=5000 --name webapp alpinehelloworld
+    - sleep 5
+    - apk --no-cache add curl
+    - curl "http://docker" | grep -q "Hello world!"
+
+release image:
+  stage: Release image
+  script:
+    - docker load < alpinehelloworld.tar
+    - docker tag alpinehelloworld "${IMAGE_NAME}:${CI_COMMIT_REF_NAME}"
+    - docker tag alpinehelloworld "${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}"
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" $CI_REGISTRY
+    - docker push "${IMAGE_NAME}:${CI_COMMIT_REF_NAME}"
+    - docker push "${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}"
+
+
+deploy prod:
+  stage: Deploy prod
+  image: dtzar/helm-kubectl:3.3.4
+  environment:
+    name: prod
+    url: http://$MINIKUBE:32000
+  only:
+    - master
+  script:
+    - kubectl config set-cluster minikube --server=${KUBE_URL} --certificate-authority="${KUBE_CA_PEM_FILE}"
+    - kubectl config set-credentials gitlab-admin --token=${KUBE_TOKEN}
+    - kubectl config set-context minikube --cluster=minikube --user=gitlab-admin --namespace default
+    - kubectl config use-context minikube
+    - kubectl --insecure-skip-tls-verify create secret docker-registry regcred --docker-server=$CI_REGISTRY --docker-username=$CI_REGISTRY_USER --docker-password=$CI_REGISTRY_PASSWORD --docker-email=$GITLAB_USER_EMAIL || echo "already exist"
+    - cat kubernetes/alpinehelloworld.tpl | sed s/REPO/"$CI_PROJECT_NAME"/  | sed s/USER/"$GITLAB_USER_LOGIN"/ > kubernetes/alpinehelloworld.yml
+    - kubectl --insecure-skip-tls-verify apply -f kubernetes
+
+test prod:
+  <<: *test
+  stage: Test prod
+  variables:
+    DOMAIN: $MINIKUBE
+    
+    
+    
+    
+    
+    
+   ___________________________________________________________________________________________________________________________________________________
+   ---
+# Infrastructue CI for MTS-xtesting
+stages:                                                               # List of stages for jobs, and their order of execution
+  - build-vm
+#  - provision-vm
+#  - build-Mts-xtesting-image
+#  - build-mts-container
+#  - run-all-script
+
+
+terraform:                                                         # Use terraform to create the VM that will host
+  stage: build-vm 
+  image:
+    name: hashicorp/terraform:1.1.9
+    entrypoint: [""]                                               # entrypoint permet de lancé les commandes<<<<<<
+  before_script:
+    - export http_proxy=http://1
+    - export https_proxy=http://17
+    - export ftp_proxy=http://1
+    - export no_proxy=1
+    - env
+    - chmod 600 terra-infra/cle_sdm
+    - ls -la terra-infra
+    - apk add ansible                                         # install ansible on alpine os container
+    - ansible-galaxy install -r ansible/requirements.yml      # telecharge les roles pip et docker et install dans le container
+    - export TF_LOG=DEBUG
+    - apk add --update python3-dev py-pip  py-setuptools  ca-certificates gcc libffi-dev openssl-dev musl-dev linux-headers && pip install --upgrade pip setuptools && pip   install python-openstackclient
+    - export OS_PROJECT_DOMAIN_NAME=Default
+    - export OS_USER_DOMAIN_NAME=Default
+    - export OS_PROJECT_NAME=
+    - export OS_USERNAME=
+    - export OS_PASSWORD=
+    - export OS_AUTH_URL=http://172.20.135.100/identity
+    - export OS_IDENTITY_API_VERSION=3
+    - export OS_IMAGE_API_VERSION=2
+    - export no_proxy=
+    - env
+    #- apk update && apk add curl
+    #- apk py3-pip && openstackclient 
+    #&& apk del gcc musl-dev linux-headers libffi-dev && rm -rf /var/cache/apk/*
+    # --upgrade --no-cache-dir pip3 setuptools
+    # pip install --upgrade pip
+    - openstack server list
+    - cd terra-infra
+    - terraform init
+  #  - terraform providers
+  script:
+    - echo "test"
+    #- openstackclient --version
+    #- openstack versions show
+    - terraform plan 
+    - terraform apply -auto-approve
+    - ls -la
+    - cat hosts.yml
+    - sleep 40                                                        # après la création de la VM patienté 20 seconde
+    - echo "start installing Docker on VM"
+    - cd ..                                                           # revenir a la racine
+    - ansible-playbook -i terra-infra/hosts.yml ansible/playbook-install-docker.yml --key-file terra-infra/cle_sdm  # recupère les roles téléchatger plus haut et install dans la VM distante.
+    - echo "Docker installation end"
+    - echo "debut creation container mts-xtesting"
+    - ansible-playbook -i terra-infra/hosts.yml ansible/playbook-build-and-create-mts-container.yml --key-file terra-infra/cle_sdm
+    - echo "Fin"
+     
+    
